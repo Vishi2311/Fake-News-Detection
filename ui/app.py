@@ -370,7 +370,7 @@ with st.sidebar:
     st.header("🔧 System")
 
     if V2_AVAILABLE:
-        st.success("V2.1 Pipeline Ready")
+        st.success("Verification Pipeline Ready")
     else:
         st.error("V2.1 Pipeline Error")
 
@@ -458,7 +458,7 @@ st.subheader("⚙️ System Status")
 status1, status2, status3 = st.columns(3)
 
 with status1:
-    st.success("✅ V2.1 Pipeline Ready")
+    st.success("✅ Verification Pipeline Ready")
 
 with status2:
     st.success("✅ ML Model Available")
