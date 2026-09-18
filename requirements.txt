@@ -2,7 +2,9 @@ streamlit
 joblib
 psycopg2-binary
 python-dotenv
-scikit-learn
+scikit-learn==1.9.0
 pandas
 numpy
 feedparser
+requests
+beautifulsoup4

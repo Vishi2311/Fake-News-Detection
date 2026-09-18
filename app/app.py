@@ -1,159 +1,54 @@
 import streamlit as st
-import joblib
-import psycopg2
+import sys
 import os
-from dotenv import load_dotenv
 
-
-# =========================================================
-# LOAD ENVIRONMENT VARIABLES
-# =========================================================
-
-load_dotenv()
-
-
-# =========================================================
-# LOAD MODEL AND TF-IDF VECTORIZER
-# =========================================================
+# ============================================================
+# PROJECT PATH
+# ============================================================
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-MODEL_PATH = os.path.join(
+VERIFICATION_DIR = os.path.join(
     BASE_DIR,
-    "..",
-    "models",
-    "calibrated_fake_news_model.pkl"
+    "verification"
 )
 
-VECTORIZER_PATH = os.path.join(
-    BASE_DIR,
-    "..",
-    "models",
-    "tfidf_vectorizer.pkl"
-)
-
-model = joblib.load(MODEL_PATH)
-vectorizer = joblib.load(VECTORIZER_PATH)
+if VERIFICATION_DIR not in sys.path:
+    sys.path.insert(0, VERIFICATION_DIR)
 
 
-# =========================================================
-# DATABASE CONNECTION
-# =========================================================
+# ============================================================
+# IMPORT V2 PIPELINE
+# ============================================================
 
-def get_connection():
-    return psycopg2.connect(
-        host=os.getenv("DB_HOST"),
-        database=os.getenv("DB_NAME"),
-        user=os.getenv("DB_USER"),
-        password=os.getenv("DB_PASSWORD"),
-        port=os.getenv("DB_PORT")
+try:
+    from v2_full_pipeline import (
+        ml_prediction,
+        collect_evidence,
+        calculate_final_evidence,
+        calculate_final_decision
     )
 
+    IMPORT_ERROR = None
 
-# =========================================================
-# SAVE PREDICTION TO POSTGRESQL
-# =========================================================
-
-def save_prediction(title, prediction, confidence):
-
-    connection = None
-    cursor = None
-
-    try:
-        connection = get_connection()
-        cursor = connection.cursor()
-
-        cursor.execute(
-            """
-            INSERT INTO predictions
-            (title, prediction, confidence)
-            VALUES (%s, %s, %s)
-            """,
-            (
-                title,
-                prediction,
-                float(confidence)
-            )
-        )
-
-        connection.commit()
-
-        return True, None
-
-    except Exception as e:
-
-        if connection:
-            connection.rollback()
-
-        return False, str(e)
-
-    finally:
-
-        if cursor:
-            cursor.close()
-
-        if connection:
-            connection.close()
+except Exception as e:
+    IMPORT_ERROR = str(e)
 
 
-# =========================================================
-# GET PREDICTION HISTORY
-# =========================================================
-
-def get_history():
-
-    connection = None
-    cursor = None
-
-    try:
-        connection = get_connection()
-        cursor = connection.cursor()
-
-        cursor.execute(
-            """
-            SELECT
-                id,
-                title,
-                prediction,
-                confidence,
-                predicted_at
-            FROM predictions
-            ORDER BY predicted_at DESC
-            LIMIT 20
-            """
-        )
-
-        rows = cursor.fetchall()
-
-        return rows, None
-
-    except Exception as e:
-
-        return [], str(e)
-
-    finally:
-
-        if cursor:
-            cursor.close()
-
-        if connection:
-            connection.close()
-
-
-# =========================================================
+# ============================================================
 # PAGE CONFIGURATION
-# =========================================================
+# ============================================================
 
 st.set_page_config(
-    page_title="Fake News Detector",
+    page_title="Fake News Detection System",
     page_icon="📰",
-    layout="centered"
+    layout="wide"
 )
 
 
-# =========================================================
+# ============================================================
 # CUSTOM CSS
-# =========================================================
+# ============================================================
 
 st.markdown(
     """
@@ -168,8 +63,48 @@ st.markdown(
 
     .subtitle {
         text-align: center;
+        color: #777;
         font-size: 18px;
         margin-bottom: 30px;
+    }
+
+    .result-box {
+        padding: 20px;
+        border-radius: 12px;
+        margin-top: 15px;
+        text-align: center;
+        border: 1px solid #ddd;
+    }
+
+    .result-title {
+        font-size: 30px;
+        font-weight: 700;
+    }
+
+    .metric-box {
+        padding: 18px;
+        border-radius: 10px;
+        border: 1px solid #ddd;
+        text-align: center;
+        min-height: 110px;
+    }
+
+    .metric-title {
+        font-size: 15px;
+        color: #777;
+    }
+
+    .metric-value {
+        font-size: 25px;
+        font-weight: 700;
+        margin-top: 5px;
+    }
+
+    .evidence-card {
+        padding: 18px;
+        border-radius: 10px;
+        border: 1px solid #ddd;
+        margin-bottom: 12px;
     }
 
     </style>
@@ -178,9 +113,9 @@ st.markdown(
 )
 
 
-# =========================================================
+# ============================================================
 # HEADER
-# =========================================================
+# ============================================================
 
 st.markdown(
     '<div class="main-title">📰 Fake News Detection System</div>',
@@ -189,223 +124,521 @@ st.markdown(
 
 st.markdown(
     '<div class="subtitle">'
-    'Machine Learning Based News Classification'
+    'Machine Learning + External Evidence Verification'
     '</div>',
     unsafe_allow_html=True
 )
 
-st.divider()
+
+# ============================================================
+# IMPORT ERROR
+# ============================================================
+
+if IMPORT_ERROR:
+
+    st.error(
+        "Unable to load the V2 verification pipeline."
+    )
+
+    st.code(IMPORT_ERROR)
+
+    st.stop()
 
 
-# =========================================================
+# ============================================================
 # INPUT SECTION
-# =========================================================
+# ============================================================
 
 st.subheader("Enter News")
 
-title = st.text_input(
-    "News Title",
+headline = st.text_input(
+    "News Headline",
     placeholder="Enter the news headline..."
 )
 
 article = st.text_area(
     "News Article",
-    placeholder="Paste the complete news article here...",
-    height=250
+    placeholder="Enter the complete news article or claim...",
+    height=220
 )
 
 
-# =========================================================
-# PREDICTION
-# =========================================================
+# ============================================================
+# ANALYZE BUTTON
+# ============================================================
 
-if st.button("🔍 Detect News", use_container_width=True):
+analyze = st.button(
+    "🔍 Analyze News",
+    type="primary",
+    use_container_width=True
+)
 
-    if not title.strip() and not article.strip():
 
-        st.warning("⚠️ Please enter a news title or article.")
+# ============================================================
+# ANALYSIS
+# ============================================================
+
+if analyze:
+
+    if not headline.strip():
+
+        st.warning(
+            "Please enter a news headline."
+        )
+
+        st.stop()
+
+    if not article.strip():
+
+        st.warning(
+            "Please enter the news article."
+        )
+
+        st.stop()
+
+    # --------------------------------------------------------
+    # PROGRESS
+    # --------------------------------------------------------
+
+    progress = st.progress(0)
+
+    status = st.empty()
+
+    # --------------------------------------------------------
+    # ML
+    # --------------------------------------------------------
+
+    status.info(
+        "Step 1/5 — Running machine learning prediction..."
+    )
+
+    try:
+
+        ml_label, ml_confidence = ml_prediction(
+            headline.strip(),
+            article.strip()
+        )
+
+    except Exception as e:
+
+        progress.empty()
+        status.empty()
+
+        st.error(
+            f"ML prediction failed:\n\n{e}"
+        )
+
+        st.stop()
+
+    progress.progress(20)
+
+    # --------------------------------------------------------
+    # EXTERNAL EVIDENCE
+    # --------------------------------------------------------
+
+    status.info(
+        "Step 2/5 — Searching external evidence..."
+    )
+
+    try:
+
+        evidence = collect_evidence(
+            headline.strip(),
+            article.strip()
+        )
+
+    except Exception as e:
+
+        progress.empty()
+        status.empty()
+
+        st.error(
+            f"Evidence search failed:\n\n{e}"
+        )
+
+        st.stop()
+
+    progress.progress(50)
+
+    # --------------------------------------------------------
+    # EVIDENCE SCORING
+    # --------------------------------------------------------
+
+    status.info(
+        "Step 3/5 — Scoring evidence relevance..."
+    )
+
+    evidence_result = calculate_final_evidence(
+        evidence
+    )
+
+    progress.progress(70)
+
+    # --------------------------------------------------------
+    # FINAL DECISION
+    # --------------------------------------------------------
+
+    status.info(
+        "Step 4/5 — Comparing evidence with claim..."
+    )
+
+    final_assessment, final_confidence = (
+        calculate_final_decision(
+            ml_label,
+            ml_confidence,
+            evidence_result
+        )
+    )
+
+    progress.progress(90)
+
+    # --------------------------------------------------------
+    # COMPLETE
+    # --------------------------------------------------------
+
+    status.success(
+        "Step 5/5 — Analysis completed."
+    )
+
+    progress.progress(100)
+
+    # ========================================================
+    # RESULTS
+    # ========================================================
+
+    st.divider()
+
+    st.subheader("Final Assessment")
+
+    if final_assessment == "REAL":
+
+        st.success(
+            f"### ✅ REAL\n\n"
+            f"Confidence: {final_confidence * 100:.2f}%"
+        )
+
+    elif final_assessment == "FAKE":
+
+        st.error(
+            f"### ❌ FAKE\n\n"
+            f"Confidence: {final_confidence * 100:.2f}%"
+        )
 
     else:
 
-        # Combine title and article
-        news = title + " " + article
-
-        # Convert text into TF-IDF features
-        news_tfidf = vectorizer.transform([news])
-
-        # Make prediction
-        prediction = model.predict(news_tfidf)[0]
-
-        # Get probabilities
-        probabilities = model.predict_proba(news_tfidf)[0]
-
-        # Determine result
-        if prediction == 0:
-
-            result = "FAKE"
-            confidence = float(probabilities[0] * 100)
-
-        else:
-
-            result = "REAL"
-            confidence = float(probabilities[1] * 100)
+        st.warning(
+            f"### ⚠️ NEEDS VERIFICATION\n\n"
+            f"Confidence: {final_confidence * 100:.2f}%"
+        )
 
 
-        # =================================================
-        # DISPLAY RESULT
-        # =================================================
+    # ========================================================
+    # METRICS
+    # ========================================================
 
-        st.divider()
+    col1, col2, col3, col4 = st.columns(4)
 
-        st.subheader("Prediction Result")
+    with col1:
 
-        if result == "FAKE":
-
-            st.error("🚨 Prediction: FAKE")
-
-        else:
-
-            st.success("✅ Prediction: REAL")
-
-
-        # Confidence
         st.metric(
-            label="Model Confidence",
-            value=f"{confidence:.2f}%"
+            "ML Prediction",
+            ml_label
         )
 
-        st.progress(
-            int(confidence),
-            text=f"Confidence: {confidence:.2f}%"
+    with col2:
+
+        st.metric(
+            "ML Confidence",
+            f"{ml_confidence * 100:.2f}%"
+        )
+
+    with col3:
+
+        st.metric(
+            "Evidence Assessment",
+            evidence_result["assessment"]
+        )
+
+    with col4:
+
+        st.metric(
+            "Evidence Score",
+            f"{evidence_result['score'] * 100:.2f}%"
         )
 
 
-        # =================================================
-        # INTERPRETATION
-        # =================================================
+    # ========================================================
+    # EVIDENCE LEVEL
+    # ========================================================
 
-        if confidence >= 90:
+    st.subheader("Evidence Strength")
 
-            st.info(
-                "The model is highly confident in this prediction."
-            )
+    level = evidence_result["level"]
 
-        elif confidence >= 70:
+    if level == "STRONG":
 
-            st.info(
-                "The model has relatively high confidence "
-                "in this prediction."
-            )
-
-        else:
-
-            st.warning(
-                "The model has lower confidence. Consider "
-                "verifying the information using reliable sources."
-            )
-
-
-        # =================================================
-        # SAVE TO POSTGRESQL
-        # =================================================
-
-        saved, error = save_prediction(
-            title,
-            result,
-            confidence
+        st.success(
+            f"Evidence Level: **{level}**"
         )
 
-        if saved:
+    elif level == "MODERATE":
 
-            st.success(
-                "✅ Prediction was successfully saved to PostgreSQL."
-            )
+        st.warning(
+            f"Evidence Level: **{level}**"
+        )
 
-        else:
+    else:
 
-            st.error(
-                "❌ Prediction was made, but it could not be "
-                "saved to PostgreSQL."
-            )
-
-            st.code(error)
+        st.info(
+            f"Evidence Level: **{level}**"
+        )
 
 
-# =========================================================
-# PREDICTION HISTORY
-# =========================================================
+    # ========================================================
+    # STATISTICS
+    # ========================================================
+
+    st.subheader("Verification Statistics")
+
+    total_evidence = len(evidence)
+
+    article_content = sum(
+        e["type"] == "ARTICLE_CONTENT"
+        for e in evidence
+    )
+
+    rss_summary = sum(
+        e["type"] == "RSS_SUMMARY"
+        for e in evidence
+    )
+
+    trusted_sources = sum(
+        e["trusted"]
+        for e in evidence
+    )
+
+    col1, col2, col3, col4 = st.columns(4)
+
+    with col1:
+
+        st.metric(
+            "Evidence Found",
+            total_evidence
+        )
+
+    with col2:
+
+        st.metric(
+            "Article Content",
+            article_content
+        )
+
+    with col3:
+
+        st.metric(
+            "RSS Results",
+            rss_summary
+        )
+
+    with col4:
+
+        st.metric(
+            "Trusted Sources",
+            trusted_sources
+        )
+
+
+    # ========================================================
+    # SUPPORT / CONTRADICTION
+    # ========================================================
+
+    col1, col2, col3, col4 = st.columns(4)
+
+    with col1:
+
+        st.metric(
+            "Strong Supporting",
+            evidence_result[
+                "strong_supporting"
+            ]
+        )
+
+    with col2:
+
+        st.metric(
+            "Strong Contradicting",
+            evidence_result[
+                "strong_contradicting"
+            ]
+        )
+
+    with col3:
+
+        st.metric(
+            "Trusted Supporting",
+            evidence_result[
+                "trusted_supporting"
+            ]
+        )
+
+    with col4:
+
+        st.metric(
+            "Trusted Contradicting",
+            evidence_result[
+                "trusted_contradicting"
+            ]
+        )
+
+
+    # ========================================================
+    # EVIDENCE
+    # ========================================================
+
+    st.divider()
+
+    st.subheader("🔎 External Evidence")
+
+    if not evidence:
+
+        st.info(
+            "No useful external evidence was found."
+        )
+
+    else:
+
+        for i, e in enumerate(
+            evidence,
+            start=1
+        ):
+
+            with st.expander(
+                f"{i}. {e['title']}"
+            ):
+
+                col1, col2 = st.columns(2)
+
+                with col1:
+
+                    st.write(
+                        f"**Source:** {e['source']}"
+                    )
+
+                    st.write(
+                        f"**Type:** {e['type']}"
+                    )
+
+                    st.write(
+                        f"**Relationship:** "
+                        f"{e['relationship']}"
+                    )
+
+                    st.write(
+                        f"**Trusted Source:** "
+                        f"{'YES' if e['trusted'] else 'NO'}"
+                    )
+
+                with col2:
+
+                    st.write(
+                        f"**Quality:** "
+                        f"{e['quality'] * 100:.2f}%"
+                    )
+
+                    st.write(
+                        f"**Relevance:** "
+                        f"{e['relevance'] * 100:.2f}%"
+                    )
+
+                    st.write(
+                        f"**Claim Overlap:** "
+                        f"{e['claim_overlap'] * 100:.2f}%"
+                    )
+
+                    st.write(
+                        f"**Entity Overlap:** "
+                        f"{e['entity_overlap'] * 100:.2f}%"
+                    )
+
+                st.write(
+                    f"**Event Overlap:** "
+                    f"{e['event_overlap'] * 100:.2f}%"
+                )
+
+                st.write(
+                    f"**Year Match:** "
+                    f"{e['year_match'] * 100:.2f}%"
+                )
+
+                st.write(
+                    f"**Supporting:** "
+                    f"{e['supporting']}"
+                )
+
+                st.write(
+                    f"**Contradicting:** "
+                    f"{e['contradicting']}"
+                )
+
+                if e["entities"]:
+
+                    st.write(
+                        "**Entities:** "
+                        + ", ".join(e["entities"])
+                    )
+
+                if e["events"]:
+
+                    st.write(
+                        "**Events:** "
+                        + ", ".join(e["events"])
+                    )
+
+                st.markdown(
+                    f"[🔗 Open Source]({e['link']})"
+                )
+
+
+    # ========================================================
+    # INTERPRETATION
+    # ========================================================
+
+    st.divider()
+
+    st.subheader("📊 System Interpretation")
+
+    if final_assessment == "REAL":
+
+        st.write(
+            "The machine-learning model and external "
+            "evidence were evaluated together. The "
+            "available evidence strongly supports the claim."
+        )
+
+    elif final_assessment == "FAKE":
+
+        st.write(
+            "The external evidence contains strong "
+            "contradictory information. The claim should "
+            "be treated as false."
+        )
+
+    else:
+
+        st.write(
+            "The available evidence was insufficient to "
+            "confirm or contradict the claim. The system "
+            "therefore recommends further verification."
+        )
+
+
+# ============================================================
+# FOOTER
+# ============================================================
 
 st.divider()
 
-with st.expander("📊 Prediction History"):
-
-    rows, error = get_history()
-
-    if error:
-
-        st.error("Could not load prediction history.")
-
-        st.code(error)
-
-    elif not rows:
-
-        st.info("No prediction history available yet.")
-
-    else:
-
-        for row in rows:
-
-            prediction_id = row[0]
-            prediction_title = row[1]
-            prediction_result = row[2]
-            prediction_confidence = row[3]
-            prediction_time = row[4]
-
-            st.write(
-                f"**#{prediction_id} — {prediction_title}**"
-            )
-
-            if prediction_result == "FAKE":
-
-                st.error(
-                    f"🚨 FAKE — Confidence: "
-                    f"{float(prediction_confidence):.2f}%"
-                )
-
-            else:
-
-                st.success(
-                    f"✅ REAL — Confidence: "
-                    f"{float(prediction_confidence):.2f}%"
-                )
-
-            st.caption(
-                f"Predicted at: {prediction_time}"
-            )
-
-            st.divider()
-
-
-# =========================================================
-# ABOUT PROJECT
-# =========================================================
-
-with st.expander("ℹ️ About this project"):
-
-    st.write(
-        """
-        This Fake News Detection System uses Natural Language
-        Processing and Machine Learning to classify news articles
-        as REAL or FAKE.
-
-        The text is converted into numerical features using TF-IDF,
-        and a calibrated LinearSVC model generates the prediction.
-
-        The confidence score represents the model's estimated
-        confidence, not a guarantee that the news is factually
-        true or false.
-
-        Prediction results are stored in PostgreSQL so that previous
-        predictions can be viewed in the Prediction History section.
-        """
-    )
+st.caption(
+    "Fake News Detection System — "
+    "NLP + Machine Learning + External Evidence Verification"
+)
